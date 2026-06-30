@@ -95,6 +95,7 @@
 #define XPCS_MII_CTRL			0x1f0000
 #define XPCS_MII1_CTRL(x)		(0x1a0000 + 0x10000 * ((x) - 1))
 #define XPCS_MII_AN_EN			BIT(12)
+#define XPCS_MII_AN_RESTART		BIT(9)
 #define XPCS_DUPLEX_FULL		BIT(8)
 #define XPCS_SPEED_MASK			(BIT(13) | BIT(6) | BIT(5))
 #define XPCS_SPEED_10000		(BIT(13) | BIT(6))
@@ -107,10 +108,12 @@
 #define XPCS_MII_AN_CTRL		0x1f8001
 #define XPCS_MII1_AN_CTRL(x)		(0x1a8001 + 0x10000 * ((x) - 1))
 #define XPCS_MII_AN_8BIT		BIT(8)
+#define XPCS_MII_AN_INTR_EN		BIT(0)
 
 #define XPCS_MII_AN_INTR_STS		0x1f8002
 #define XPCS_MII1_AN_INTR_STS(x)	(0x1a8002 + 0x10000 * ((x) - 1))
 #define XPCS_USXG_AN_LINK_STS		BIT(14)
+#define XPCS_MII_AN_CL37_CMPLT		BIT(0)
 #define XPCS_USXG_AN_SPEED_MASK		GENMASK(12, 10)
 #define XPCS_USXG_AN_SPEED_10		0
 #define XPCS_USXG_AN_SPEED_100		1
@@ -472,12 +475,16 @@ static int ipq_pcs_config_usxgmii(struct ipq_pcs *qpcs,
 	}
 
 	reg = (index == 0) ? XPCS_MII_AN_CTRL : XPCS_MII1_AN_CTRL(index);
-	ret = regmap_set_bits(qpcs->regmap, reg, XPCS_MII_AN_8BIT);
+	ret = regmap_set_bits(qpcs->regmap, reg,
+			      XPCS_MII_AN_8BIT | XPCS_MII_AN_INTR_EN);
 	if (ret)
 		return ret;
 
 	reg = (index == 0) ? XPCS_MII_CTRL : XPCS_MII1_CTRL(index);
-	return regmap_set_bits(qpcs->regmap, reg, XPCS_MII_AN_EN);
+	/* Advertise 10G/full while AN runs; link-up applies the result */
+	return regmap_update_bits(qpcs->regmap, reg,
+				  XPCS_MII_AN_EN | XPCS_SPEED_MASK | XPCS_DUPLEX_FULL,
+				  XPCS_MII_AN_EN | XPCS_SPEED_10000 | XPCS_DUPLEX_FULL);
 }
 
 static int ipq_pcs_config_10gbaser(struct ipq_pcs *qpcs)
@@ -552,6 +559,23 @@ static int ipq_pcs_link_up_config_usxgmii(struct ipq_pcs *qpcs,
 {
 	unsigned int reg, val;
 	int ret;
+
+	/* Rate adaptation is held off until the AN completion is acked:
+	 * restart in-band AN, wait for it and ack it.
+	 */
+	reg = (index == 0) ? XPCS_MII_CTRL : XPCS_MII1_CTRL(index);
+	ret = regmap_set_bits(qpcs->regmap, reg, XPCS_MII_AN_RESTART);
+	if (ret)
+		return ret;
+
+	reg = (index == 0) ? XPCS_MII_AN_INTR_STS : XPCS_MII1_AN_INTR_STS(index);
+	ret = regmap_read_poll_timeout(qpcs->regmap, reg, val,
+				       val & XPCS_MII_AN_CL37_CMPLT,
+				       1000, 100000);
+	if (ret)
+		dev_warn(qpcs->dev, "USXGMII in-band AN did not complete\n");
+	else
+		regmap_clear_bits(qpcs->regmap, reg, XPCS_MII_AN_CL37_CMPLT);
 
 	switch (speed) {
 	case SPEED_10000:
