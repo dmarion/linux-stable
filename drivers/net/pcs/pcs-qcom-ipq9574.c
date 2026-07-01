@@ -157,6 +157,8 @@ struct ipq_pcs {
 
 	struct ipq_pcs_mii *qpcs_mii[PCS_MAX_MII_NRS];
 	struct reset_control *xpcs_rstc;
+	struct reset_control *sys_rstc;
+	struct reset_control *soft_rstc;
 };
 
 #define phylink_pcs_to_qpcs_mii(_pcs)	\
@@ -359,6 +361,18 @@ static int ipq_pcs_config_mode(struct ipq_pcs *qpcs,
 					 PCS_MISC2_MODE_MASK, misc2);
 		if (ret)
 			return ret;
+	}
+
+	/* Pulse the resets as the vendor SSDK does: both held for
+	 * 100ms, then another 100ms to settle after release.
+	 */
+	if (qpcs->sys_rstc || qpcs->soft_rstc) {
+		reset_control_assert(qpcs->sys_rstc);
+		reset_control_assert(qpcs->soft_rstc);
+		msleep(100);
+		reset_control_deassert(qpcs->sys_rstc);
+		reset_control_deassert(qpcs->soft_rstc);
+		msleep(100);
 	}
 
 	/* PCS PLL reset */
@@ -1074,6 +1088,16 @@ static int ipq9574_pcs_probe(struct platform_device *pdev)
 	if (IS_ERR_OR_NULL(qpcs->xpcs_rstc))
 		return dev_err_probe(dev, PTR_ERR(qpcs->xpcs_rstc),
 				     "Failed to get XPCS reset\n");
+
+	qpcs->sys_rstc = devm_reset_control_get_optional_exclusive(dev, "sys");
+	if (IS_ERR(qpcs->sys_rstc))
+		return dev_err_probe(dev, PTR_ERR(qpcs->sys_rstc),
+				     "Failed to get uniphy sys reset\n");
+
+	qpcs->soft_rstc = devm_reset_control_get_optional_exclusive(dev, "soft");
+	if (IS_ERR(qpcs->soft_rstc))
+		return dev_err_probe(dev, PTR_ERR(qpcs->soft_rstc),
+				     "Failed to get uniphy soft reset\n");
 
 	ret = ipq_pcs_clk_register(qpcs);
 	if (ret)
