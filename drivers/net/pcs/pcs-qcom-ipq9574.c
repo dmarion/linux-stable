@@ -23,6 +23,11 @@
 #define PCS_CALIBRATION			0x1e0
 #define PCS_CALIBRATION_DONE		BIT(7)
 
+/* 25MHz reference clock output to an external PHY */
+#define PCS_CLKOUT_50M_CTRL		0x610
+#define PCS_CLKOUT_50M_25M_EN		BIT(0)
+#define PCS_CLKOUT_50M_DIV2_SEL		BIT(5)
+
 #define PCS_MISC2			0x218
 #define PCS_MISC2_MODE_MASK		GENMASK(6, 5)
 #define PCS_MISC2_MODE_SGMII		FIELD_PREP(PCS_MISC2_MODE_MASK, 0x1)
@@ -376,6 +381,18 @@ static int ipq_pcs_config_mode(struct ipq_pcs *qpcs,
 	}
 
 	qpcs->interface = interface;
+
+	/* The clock output register is only writable after PLL reset
+	 * and calibration, so this cannot be done at probe.
+	 */
+	if (of_property_read_bool(qpcs->dev->of_node,
+				  "qcom,uniphy-clkout-25mhz")) {
+		ret = regmap_set_bits(qpcs->regmap, PCS_CLKOUT_50M_CTRL,
+				      PCS_CLKOUT_50M_25M_EN |
+				      PCS_CLKOUT_50M_DIV2_SEL);
+		if (ret)
+			return ret;
+	}
 
 	/* Configure the RX and TX clock to NSSCC as 125M or 312.5M based
 	 * on current interface mode.
