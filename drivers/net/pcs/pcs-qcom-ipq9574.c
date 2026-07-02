@@ -29,9 +29,11 @@
 #define PCS_CLKOUT_50M_DIV2_SEL		BIT(5)
 
 #define PCS_MISC2			0x218
-#define PCS_MISC2_MODE_MASK		GENMASK(6, 5)
-#define PCS_MISC2_MODE_SGMII		FIELD_PREP(PCS_MISC2_MODE_MASK, 0x1)
-#define PCS_MISC2_MODE_SGMII_PLUS	FIELD_PREP(PCS_MISC2_MODE_MASK, 0x2)
+#define PCS_MISC2_RATE_MASK		GENMASK(1, 0)
+#define PCS_MISC2_MODE_MASK		GENMASK(6, 4)
+#define PCS_MISC2_MODE_SGMII		FIELD_PREP(PCS_MISC2_MODE_MASK, 0x3)
+#define PCS_MISC2_MODE_SGMII_PLUS	FIELD_PREP(PCS_MISC2_MODE_MASK, 0x5)
+#define PCS_MISC2_MODE_USXGMII		FIELD_PREP(PCS_MISC2_MODE_MASK, 0x7)
 
 #define PCS_MODE_CTRL			0x46c
 #define PCS_MODE_SEL_MASK		GENMASK(12, 8)
@@ -356,9 +358,13 @@ static int ipq_pcs_config_mode(struct ipq_pcs *qpcs,
 			return ret;
 	}
 
+	if (interface == PHY_INTERFACE_MODE_USXGMII)
+		misc2 = PCS_MISC2_MODE_USXGMII;
+
 	if (misc2) {
 		ret = regmap_update_bits(qpcs->regmap, PCS_MISC2,
-					 PCS_MISC2_MODE_MASK, misc2);
+					 PCS_MISC2_MODE_MASK |
+					 PCS_MISC2_RATE_MASK, misc2);
 		if (ret)
 			return ret;
 	}
