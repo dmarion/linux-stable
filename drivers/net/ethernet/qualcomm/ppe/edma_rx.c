@@ -58,7 +58,7 @@ static int edma_rx_alloc_buffer_list(struct edma_rxfill_ring *rxfill_ring, int a
 		skb_reserve(skb, EDMA_RX_SKB_HEADROOM + NET_IP_ALIGN);
 
 		if (likely(!page_mode)) {
-			buff_addr = dma_map_single(dev, skb->data, dma_map_size, DMA_TO_DEVICE);
+			buff_addr = dma_map_single(dev, skb->data, dma_map_size, DMA_FROM_DEVICE);
 			if (dma_mapping_error(dev, buff_addr)) {
 				dev_dbg(dev, "edma_context:%pK Unable to dma for non page mode",
 					edma_ctx);
@@ -77,7 +77,7 @@ static int edma_rx_alloc_buffer_list(struct edma_rxfill_ring *rxfill_ring, int a
 				break;
 			}
 
-			buff_addr = dma_map_page(dev, pg, 0, PAGE_SIZE, DMA_TO_DEVICE);
+			buff_addr = dma_map_page(dev, pg, 0, PAGE_SIZE, DMA_FROM_DEVICE);
 			if (dma_mapping_error(dev, buff_addr)) {
 				dev_dbg(dev, "edma_context:%pK Mapping error for page mode",
 					edma_ctx);

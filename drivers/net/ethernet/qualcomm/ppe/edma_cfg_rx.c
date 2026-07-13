@@ -43,6 +43,22 @@ static u32 edma_rx_ring_queue_map[][EDMA_MAX_CORE] = {{ 0, 8, 16, 24 },
 						{ 6, 14, 22, 30 },
 						{ 7, 15, 23, 31 }};
 
+static void edma_cfg_rx_unmap_buffer(struct device *dev,
+				     struct edma_rxfill_ring *rxfill_ring,
+				     dma_addr_t dma_addr)
+{
+	u32 dma_map_size;
+
+	if (rxfill_ring->page_mode) {
+		dma_unmap_page(dev, dma_addr, PAGE_SIZE, DMA_FROM_DEVICE);
+		return;
+	}
+
+	dma_map_size = rxfill_ring->alloc_size -
+		       EDMA_RX_SKB_HEADROOM - NET_IP_ALIGN;
+	dma_unmap_single(dev, dma_addr, dma_map_size, DMA_FROM_DEVICE);
+}
+
 u32 edma_cfg_rx_rps_bitmap_cores = EDMA_RX_DEFAULT_BITMAP;
 
 static int edma_cfg_rx_desc_rings_reset_queue_mapping(void)
@@ -376,6 +392,8 @@ void edma_cfg_rx_rings_disable(void)
 		regmap_read(regmap, reg, &data);
 		data &= ~EDMA_RXDESC_RX_EN;
 		regmap_write(regmap, reg, data);
+		/* Flush the disable write before ring cleanup. */
+		regmap_read(regmap, reg, &data);
 	}
 
 	/* Disable RxFill Rings */
@@ -388,6 +406,8 @@ void edma_cfg_rx_rings_disable(void)
 		regmap_read(regmap, reg, &data);
 		data &= ~EDMA_RXFILL_RING_EN;
 		regmap_write(regmap, reg, data);
+		/* Flush the disable write before ring cleanup. */
+		regmap_read(regmap, reg, &data);
 	}
 }
 
@@ -420,6 +440,7 @@ static void edma_cfg_rx_fill_ring_cleanup(struct edma_rxfill_ring *rxfill_ring)
 
 	while (curr_idx != cons_idx) {
 		struct edma_rxfill_desc *rxfill_desc;
+		dma_addr_t dma_addr;
 		struct sk_buff *skb;
 
 		/* Get RxFill descriptor */
@@ -435,6 +456,8 @@ static void edma_cfg_rx_fill_ring_cleanup(struct edma_rxfill_ring *rxfill_ring)
 			continue;
 		}
 
+		dma_addr = EDMA_RXFILL_BUFFER_ADDR_GET(rxfill_desc);
+		edma_cfg_rx_unmap_buffer(dev, rxfill_ring, dma_addr);
 		dev_kfree_skb_any(skb);
 	}
 
@@ -506,6 +529,7 @@ static void edma_cfg_rx_desc_ring_cleanup(struct edma_rxdesc_ring *rxdesc_ring)
 	while (cons_idx != prod_idx) {
 		struct edma_rxdesc_pri *rxdesc_pri =
 			EDMA_RXDESC_PRI_DESC(rxdesc_ring, cons_idx);
+		dma_addr_t dma_addr;
 		struct sk_buff *skb;
 
 		/* Update consumer index */
@@ -519,6 +543,8 @@ static void edma_cfg_rx_desc_ring_cleanup(struct edma_rxdesc_ring *rxdesc_ring)
 			continue;
 		}
 
+		dma_addr = EDMA_RXDESC_BUFFER_ADDR_GET(rxdesc_pri);
+		edma_cfg_rx_unmap_buffer(dev, rxdesc_ring->rxfill, dma_addr);
 		dev_kfree_skb_any(skb);
 	}
 
