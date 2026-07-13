@@ -124,6 +124,8 @@
 }
 
 #define EDMA_RXFILL_BUFFER_ADDR_SET(desc, addr)	(((desc)->word0) = (u32)(addr))
+#define EDMA_RXFILL_BUFFER_ADDR_GET(desc)	\
+				((u32)(le32_to_cpu((__force __le32)((desc)->word0))))
 
 /* Opaque values are set in word2 and word3, they are not accessed by the EDMA HW,
  * so endianness conversion is not needed.
