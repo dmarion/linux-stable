@@ -2238,7 +2238,7 @@ static int rtl8261be_match_phy_device(struct phy_device *phydev,
 	if (data < 0)
 		return 0;
 
-	if (data == 0x8251)
+	if (data != 0x8261)
 		return 0;
 
 	data = phy_read_mmd(phydev, MDIO_MMD_VEND1, RTL826X_VEND1_VERSION_ID);
@@ -2266,7 +2266,7 @@ static int rtl8261n_match_phy_device(struct phy_device *phydev,
 	if (data < 0)
 		return 0;
 
-	if (data == 0x8251)
+	if (data != 0x8261)
 		return 0;
 
 	data = phy_read_mmd(phydev, MDIO_MMD_VEND1, RTL826X_VEND1_VERSION_ID);
@@ -2621,9 +2621,12 @@ static int rtl826x_probe(struct phy_device *phydev)
 	if (!priv->enable_pma_low_power)
 		phydev_warn(phydev, "PMA low-power suspend disabled\n");
 
-	/* Disable EEE due to link stability issues */
+	/* Disable EEE due to link stability issues (incl. multi-G / rate-adapt) */
 	phy_disable_eee_mode(phydev, ETHTOOL_LINK_MODE_100baseT_Full_BIT);
 	phy_disable_eee_mode(phydev, ETHTOOL_LINK_MODE_1000baseT_Full_BIT);
+	phy_disable_eee_mode(phydev, ETHTOOL_LINK_MODE_2500baseT_Full_BIT);
+	phy_disable_eee_mode(phydev, ETHTOOL_LINK_MODE_5000baseT_Full_BIT);
+	phy_disable_eee_mode(phydev, ETHTOOL_LINK_MODE_10000baseT_Full_BIT);
 
 	ret = rtl826x_patch_db_init(phydev);
 	if (ret < 0)
@@ -2703,7 +2706,8 @@ static int rtl826x_config_init(struct phy_device *phydev)
 		return ret;
 	}
 
-	msleep(30);
+	/* Soft-reset (MMD30.0x145); after release wait datasheet t7 SMI-ready */
+	msleep(150);
 
 	ret = rtlgen_phy_patch(phydev);
 	if (ret) {
