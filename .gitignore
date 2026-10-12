@@ -183,3 +183,8 @@ sphinx_*/
 
 # Rust analyzer configuration
 /rust-project.json
+
+_staging/
+kiwi.its
+kiwi-kernel_*.deb
+linux-headers-*/
