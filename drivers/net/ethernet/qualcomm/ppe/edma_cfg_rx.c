@@ -899,10 +899,11 @@ void edma_cfg_rx_napi_disable(void)
 
 		rxdesc_ring = &edma_ctx->rx_rings[i];
 
-		if (!rxdesc_ring->napi_added)
+		if (!rxdesc_ring->napi_added || !rxdesc_ring->napi_enabled)
 			continue;
 
 		napi_disable(&rxdesc_ring->napi);
+		rxdesc_ring->napi_enabled = false;
 	}
 }
 
@@ -926,6 +927,7 @@ void edma_cfg_rx_napi_enable(void)
 			continue;
 
 		napi_enable(&rxdesc_ring->napi);
+		rxdesc_ring->napi_enabled = true;
 	}
 }
 
@@ -948,7 +950,15 @@ void edma_cfg_rx_napi_delete(void)
 		if (!rxdesc_ring->napi_added)
 			continue;
 
-		napi_disable(&rxdesc_ring->napi);
+		/* RX NAPI may already be disabled via edma_cfg_rx_napi_disable().
+		 * napi_disable() is not idempotent, so avoid calling it again on an
+		 * already-disabled NAPI.
+		 */
+		if (rxdesc_ring->napi_enabled) {
+			napi_disable(&rxdesc_ring->napi);
+			rxdesc_ring->napi_enabled = false;
+		}
+
 		netif_napi_del(&rxdesc_ring->napi);
 		rxdesc_ring->napi_added = false;
 	}

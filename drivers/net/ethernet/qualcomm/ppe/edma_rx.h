@@ -277,6 +277,7 @@ struct edma_rxdesc_ring {
 	struct edma_rxdesc_stats rxdesc_stats;
 	struct edma_rxfill_ring *rxfill;
 	bool napi_added;
+	bool napi_enabled;
 	dma_addr_t pdma;
 	dma_addr_t sdma;
 	struct sk_buff *head;
