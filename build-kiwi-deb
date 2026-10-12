@@ -1,0 +1,108 @@
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "${BASH_SOURCE[0]}")"
+
+DTS_NAME=ipq9570-kiwi-dvk
+STAGING_DIR=_staging
+
+command -v ccache >/dev/null 2>&1 && CCACHE=${CCACHE-ccache}
+CROSS_COMPILE="${CCACHE:+$CCACHE }aarch64-linux-gnu-"
+
+# < /dev/null: avoids an interactive Kconfig prompt on genuinely new symbols.
+kmake() { make ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" KCFLAGS=-mtune=cortex-a73 "$@" < /dev/null; }
+
+kmake kiwi_defconfig
+
+kver=$(kmake -s kernelversion)
+words=(amber birch breeze cedar cloud comet coral delta ember fern frost grove harbor hazel island jade juniper lagoon maple meadow mesa mist moss ocean olive orbit pebble pine prairie quartz raven reef ridge river robin sage spruce stone summer thistle timber vale willow winter wren)
+random_word=$(shuf -e "${words[@]}" -n 1)
+krelease="${kver}-$(date +%Y%m%d%H%M)-${random_word}"
+
+kmake KERNELRELEASE="$krelease" -j"$(nproc)" Image "qcom/${DTS_NAME}.dtb" modules
+
+cat <<__EOF__ > kiwi.its
+/dts-v1/;
+
+/ {
+	description = "Kiwi kernel";
+	#address-cells = <1>;
+
+	images {
+		kernel {
+			description = "Linux ${krelease} (linux-6.18.y-kiwi)";
+			data = /incbin/("${PWD}/arch/arm64/boot/Image");
+			type = "kernel";
+			arch = "arm64";
+			os = "linux";
+			compression = "none";
+			load = <0x41080000>;
+			entry = <0x41080000>;
+			hash {
+				algo = "sha256";
+			};
+		};
+		fdt {
+			description = "${DTS_NAME}";
+			data = /incbin/("${PWD}/arch/arm64/boot/dts/qcom/${DTS_NAME}.dtb");
+			type = "flat_dt";
+			arch = "arm64";
+			compression = "none";
+			hash {
+				algo = "sha256";
+			};
+		};
+	};
+
+	configurations {
+		default = "config-1";
+		config-1 {
+			description = "Kiwi kernel boot";
+			kernel = "kernel";
+			fdt = "fdt";
+		};
+	};
+};
+__EOF__
+
+rm -rf "$STAGING_DIR"
+mkdir -p "$STAGING_DIR/boot" "$STAGING_DIR/DEBIAN"
+mkimage -f kiwi.its "$STAGING_DIR/boot/kiwi.itb"
+kmake KERNELRELEASE="$krelease" INSTALL_MOD_PATH="$STAGING_DIR" modules_install
+
+# Headers for building out-of-tree modules on the router itself, same
+# tree the real linux-headers-* package ships (via builddeb's own
+# install-extmod-build helper). Its host tools (modpost etc.) get built
+# with CC, not HOSTCC -- they need to run natively on the router later,
+# not on this build machine.
+mkdir -p "$STAGING_DIR/usr/src/linux-headers-${krelease}"
+ARCH=arm64 CROSS_COMPILE="$CROSS_COMPILE" srctree="$PWD" SRCARCH=arm64 \
+	MAKE=make CC="${CROSS_COMPILE}gcc" HOSTCC=gcc \
+	sh scripts/package/install-extmod-build "$STAGING_DIR/usr/src/linux-headers-${krelease}"
+ln -s "/usr/src/linux-headers-${krelease}" "$STAGING_DIR/lib/modules/${krelease}/build"
+
+cat <<__EOF__ > "$STAGING_DIR/DEBIAN/control"
+Package: kiwi-kernel
+Version: ${krelease}
+Architecture: arm64
+Maintainer: Kiwi board bring-up
+Description: Kiwi (8devices Kiwi-DVK) kernel modules + headers + FIT image
+__EOF__
+
+cat <<__EOF__ > "$STAGING_DIR/DEBIAN/postinst"
+#!/bin/sh
+set -e
+depmod -a ${krelease}
+__EOF__
+
+cat <<__EOF__ > "$STAGING_DIR/DEBIAN/postrm"
+#!/bin/sh
+set -e
+depmod -a ${krelease} || true
+__EOF__
+
+chmod 755 "$STAGING_DIR/DEBIAN/postinst" "$STAGING_DIR/DEBIAN/postrm"
+
+deb_path="kiwi-kernel_${krelease}_arm64.deb"
+dpkg-deb --root-owner-group --build "$STAGING_DIR" "$deb_path"
+
+echo "-- .deb built: $deb_path"
