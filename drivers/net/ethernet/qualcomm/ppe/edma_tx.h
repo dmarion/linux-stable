@@ -275,6 +275,7 @@ struct edma_txdesc_ring {
  * @dma: Descriptor ring physical address
  * @count: Number of descriptors in the ring
  * @napi_added: Flag to indicate NAPI add status
+ * @napi_enabled: Flag to indicate NAPI enable status
  */
 struct edma_txcmpl_ring {
 	struct napi_struct napi;
@@ -286,6 +287,7 @@ struct edma_txcmpl_ring {
 	dma_addr_t dma;
 	u32 count;
 	bool napi_added;
+	bool napi_enabled;
 };
 
 extern int edma_tx_napi_budget;

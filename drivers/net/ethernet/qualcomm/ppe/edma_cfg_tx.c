@@ -590,6 +590,7 @@ void edma_cfg_tx_napi_enable(u32 port_id)
 			continue;
 
 		napi_enable(&txcmpl_ring->napi);
+		txcmpl_ring->napi_enabled = true;
 	}
 }
 
@@ -608,10 +609,11 @@ void edma_cfg_tx_napi_disable(u32 port_id)
 	for_each_possible_cpu(i) {
 		ring_idx = ((port_id - 1) * num_possible_cpus()) + i;
 		txcmpl_ring = &edma_ctx->txcmpl_rings[ring_idx];
-		if (!txcmpl_ring->napi_added)
+		if (!txcmpl_ring->napi_added || !txcmpl_ring->napi_enabled)
 			continue;
 
 		napi_disable(&txcmpl_ring->napi);
+		txcmpl_ring->napi_enabled = false;
 	}
 }
 
@@ -633,7 +635,16 @@ void edma_cfg_tx_napi_delete(u32 port_id)
 		if (!txcmpl_ring->napi_added)
 			continue;
 
-		napi_disable(&txcmpl_ring->napi);
+		/* NAPI may already be disabled via edma_cfg_tx_napi_disable(),
+		 * e.g. if the netdevice was closed before being destroyed.
+		 * napi_disable() is not idempotent, so avoid calling it again
+		 * on an already-disabled NAPI - doing so hangs forever.
+		 */
+		if (txcmpl_ring->napi_enabled) {
+			napi_disable(&txcmpl_ring->napi);
+			txcmpl_ring->napi_enabled = false;
+		}
+
 		netif_napi_del(&txcmpl_ring->napi);
 		txcmpl_ring->napi_added = false;
 	}
