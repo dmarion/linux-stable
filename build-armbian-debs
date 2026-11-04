@@ -1,0 +1,199 @@
+#!/bin/bash
+# SPDX-License-Identifier: GPL-2.0-only
+# Package layout/hooks follow armbian/build: lib/functions/compilation/kernel-debs.sh.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+export ARCH=arm64
+export CROSS_COMPILE=aarch64-linux-gnu-
+export LOCALVERSION=
+command -v ccache >/dev/null || { echo 'Install ccache first.' >&2; exit 1; }
+kmake() { make CC="ccache ${CROSS_COMPILE}gcc" HOSTCC="ccache gcc" HOSTCXX="ccache g++" "$@"; }
+
+# This is Armbian's complete defconfig; olddefconfig supplies Kconfig defaults.
+if [ ! -f .config ] || [ arch/arm64/configs/linux-qcs6490-edge.config -nt .config ]; then
+    cp arch/arm64/configs/linux-qcs6490-edge.config .config
+fi
+if ! grep -qx 'CONFIG_LOCALVERSION="-custom-qcs6490"' .config; then
+    scripts/config --set-str LOCALVERSION -custom-qcs6490
+fi
+kmake olddefconfig
+kmake -j"$(nproc)" all modules dtbs
+release=$(kmake -s kernelrelease)
+version=$(date +%Y.%m.%d.%H%M%S)
+stage=$(mktemp -d "$PWD/.armbian-debs.XXXXXX")
+trap 'rm -rf -- "$stage"' EXIT
+image="$stage/image"
+dtb="$stage/dtb"
+headers="$stage/headers"
+mkdir -p "$image/boot" "$dtb/boot" "$headers" debs
+
+install -m 644 "$(kmake -s image_name)" "$image/boot/vmlinuz-$release"
+install -m 644 System.map "$image/boot/System.map-$release"
+install -m 644 .config "$image/boot/config-$release"
+kmake INSTALL_MOD_PATH="$image" INSTALL_MOD_STRIP=1 modules_install
+rm -f "$image/lib/modules/$release/build" "$image/lib/modules/$release/source"
+kmake INSTALL_DTBS_PATH="$image/usr/lib/linux-image-$release" dtbs_install
+cp -a "$image/usr/lib/linux-image-$release" "$dtb/boot/dtb-$release"
+
+# Armbian builds header tools on the board, against its own libc/OpenSSL.
+header_tree="$headers/usr/src/linux-headers-$release"
+mkdir -p "$header_tree"
+{
+    echo Makefile
+    echo Kconfig
+    echo Kbuild
+    find Documentation arch block certs crypto drivers fs include init io_uring ipc kernel \
+        lib mm net rust samples scripts security sound tools usr virt \
+        -type f \( -name 'Makefile*' -o -name 'Kconfig*' -o -name '*.pl' \) -print
+    find arch/arm64/include include scripts tools \
+        \( -path tools/perf -o -path tools/testing \) -prune -o \
+        \( -type f -o -type l \) -print
+    find security/*/include -type f
+    echo Module.symvers
+    echo .config
+} | sort -u | tar --no-recursion -cf - -T - | tar -xf - -C "$header_tree"
+python3 - "$header_tree" <<'PY'
+import pathlib, sys
+for directory in ('scripts', 'tools'):
+    for path in (pathlib.Path(sys.argv[1]) / directory).rglob('*'):
+        if path.is_file() and not path.is_symlink():
+            with path.open('rb') as stream:
+                magic = stream.read(8)
+            binary = magic.startswith(b'\x7fELF') or magic in (b'!<arch>\n', b'!<thin>\n')
+            if binary or path.name.endswith(('.o', '.cmd')):
+                path.unlink()
+PY
+config_files=(.config include/config include/generated/autoconf.h)
+if [ -f include/generated/rustc_cfg ]; then
+    config_files+=(include/generated/rustc_cfg)
+fi
+tar -czf "$header_tree/include/generated/.armbian-build.tar.gz" "${config_files[@]}"
+mkdir -p "$headers/lib/modules/$release"
+ln -s "/usr/src/linux-headers-$release" "$headers/lib/modules/$release/build"
+
+control() {
+    local dir=$1 kind=$2
+    mkdir -p "$dir/DEBIAN"
+    cat > "$dir/DEBIAN/control" <<EOF
+Package: linux-$kind-custom-qcs6490
+Version: $version
+Source: linux-$(kmake -s kernelversion)
+Architecture: arm64
+Maintainer: Local kernel build <root@localhost>
+Section: kernel
+Priority: optional
+Description: Armbian Linux custom $kind $release
+EOF
+}
+control "$image" image
+cat >> "$image/DEBIAN/control" <<EOF
+Armbian-Kernel-Version: $(kmake -s kernelversion)
+Armbian-Kernel-Version-Family: $release
+Depends: initramfs-tools | linux-initramfs-tool
+Provides: linux-image, linux-image-armbian, armbian-custom, wireguard-modules
+EOF
+control "$dtb" dtb
+echo 'Provides: linux-dtb, linux-dtb-armbian, armbian-custom' >> "$dtb/DEBIAN/control"
+control "$headers" headers
+echo 'Provides: linux-headers, linux-headers-armbian, armbian-custom' >> "$headers/DEBIAN/control"
+echo 'Depends: make, gcc, libc6-dev, bison, flex, libssl-dev, libelf-dev, pahole | dwarves, python3-minimal' >> "$headers/DEBIAN/control"
+
+for hook in preinst postinst prerm postrm; do
+    cat > "$image/DEBIAN/$hook" <<EOF
+#!/bin/bash
+set -eu
+release='$release'
+hook='$hook'
+export DEB_MAINT_PARAMS="\$*"
+export INITRD=Yes
+EOF
+    cat >> "$image/DEBIAN/$hook" <<'EOF'
+hook_rc=0
+if [ "$hook" = postinst ]; then
+    depmod -a "$release"
+fi
+if [ -d "/etc/kernel/$hook.d" ]; then
+    skip_hook=
+    if [ "$hook" = postinst ]; then
+        case "$(dpkg-query -W -f='${db:Status-Abbrev}' linux-headers-custom-qcs6490 2>/dev/null || true)" in
+            ?[UF]*) skip_hook=dkms ;;
+        esac
+    fi
+    for script in $(run-parts --test "/etc/kernel/$hook.d"); do
+        [ "${script##*/}" = "$skip_hook" ] && continue
+        "$script" "$release" "/boot/vmlinuz-$release" || hook_rc=$?
+    done
+fi
+if [ "$hook" = postinst ]; then
+    touch /boot/.next
+    if [ "$(findmnt -n -o FSTYPE -T /boot)" = vfat ]; then
+        cp "/boot/vmlinuz-$release" /boot/Image.tmp
+        sync
+        mv -f /boot/Image.tmp /boot/Image
+    else
+        ln -sfn "vmlinuz-$release" /boot/Image
+        linux-update-symlinks install "$release" "boot/vmlinuz-$release" || true
+    fi
+    # Q6A uses Armbian's GRUB-with-DTB generator. Select this kernel even
+    # when GRUB was previously configured to remember an older selection.
+    if [ "$hook_rc" = 0 ] && [ -x /etc/grub.d/09_linux_with_dtb.sh ]; then
+        test -s "/boot/armbian-dtb-$release"
+        test -s "/boot/initrd.img-$release"
+        update-grub
+        entry=$(awk -F "'" -v prefix="gnulinux-$release-advanced-" '
+            /^[[:space:]]*menuentry / {
+                for (i=2; i<=NF; i+=2)
+                    if (index($i, prefix) == 1) { print $i; exit }
+            }' /boot/grub/grub.cfg)
+        test -n "$entry"
+        device_id=${entry#gnulinux-$release-advanced-}
+        if grep -Fq "'gnulinux-advanced-$device_id'" /boot/grub/grub.cfg; then
+            entry="gnulinux-advanced-$device_id>$entry"
+        fi
+        mkdir -p /etc/default/grub.d
+        printf 'GRUB_DEFAULT="%s"\nGRUB_SAVEDEFAULT=false\n' "$entry" \
+            > /etc/default/grub.d/99-armbian-local-kernel.cfg
+        update-grub
+    fi
+elif [ "$hook" = postrm ] && [[ "${1:-}" = remove || "${1:-}" = purge ]]; then
+    defaults=/etc/default/grub.d/99-armbian-local-kernel.cfg
+    if [ -f "$defaults" ] && grep -Fq "gnulinux-$release-advanced-" "$defaults"; then
+        rm -f "$defaults"
+        update-grub
+    fi
+fi
+exit "$hook_rc"
+EOF
+done
+
+cat > "$dtb/DEBIAN/postinst" <<EOF
+#!/bin/bash
+set -eu
+if [ "\$(findmnt -n -o FSTYPE -T /boot)" = vfat ]; then
+    rm -rf /boot/dtb
+    mv '/boot/dtb-$release' /boot/dtb
+else
+    ln -sfnT 'dtb-$release' /boot/dtb
+fi
+EOF
+cat > "$headers/DEBIAN/postinst" <<EOF
+#!/bin/bash
+set -eu
+export DEB_MAINT_PARAMS="\$*"
+cd '/usr/src/linux-headers-$release'
+make ARCH=arm64 olddefconfig
+make ARCH=arm64 -j"\$(nproc)" scripts
+make ARCH=arm64 -j"\$(nproc)" M=scripts/mod
+make ARCH=arm64 -j"\$(nproc)" tools/bpf/resolve_btfids
+tar -xzf include/generated/.armbian-build.tar.gz
+if [ -d /etc/kernel/header_postinst.d ]; then
+    run-parts --arg='$release' /etc/kernel/header_postinst.d
+fi
+EOF
+
+for dir in "$image" "$dtb" "$headers"; do
+    find "$dir/DEBIAN" -type f ! -name control -exec chmod 755 {} +
+    dpkg-deb --root-owner-group --build "$dir" "debs/$(sed -n 's/^Package: //p' "$dir/DEBIAN/control")_${version}_arm64.deb"
+done
