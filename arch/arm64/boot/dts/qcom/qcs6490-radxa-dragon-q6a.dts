@@ -47,6 +47,24 @@
 		serial0 = &uart5;
 	};
 
+	poe-w1 {
+		compatible = "w1-gpio";
+		gpios = <&tlmm 96 GPIO_ACTIVE_HIGH>;
+	};
+
+	poe_pwm: poe-pwm {
+		compatible = "pwm-gpio";
+		#pwm-cells = <3>;
+		gpios = <&tlmm 56 GPIO_ACTIVE_LOW>;
+	};
+
+	poe_fan: poe-fan {
+		compatible = "pwm-fan";
+		#cooling-cells = <2>;
+		cooling-levels = <0 100 170 255>;
+		pwms = <&poe_pwm 0 1000000 0>;
+	};
+
 	wcd938x: audio-codec {
 		compatible = "qcom,wcd9380-codec";
 
@@ -255,6 +273,44 @@
 	};
 
 	thermal-zones {
+		cpu0-thermal {
+			polling-delay = <1000>;
+
+			trips {
+				poe_cpu_active: poe-active {
+					temperature = <60000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+			};
+
+			cooling-maps {
+				poe-fan-map {
+					trip = <&poe_cpu_active>;
+					cooling-device = <&poe_fan 0 3>;
+				};
+			};
+		};
+
+		gpuss0-thermal {
+			polling-delay = <1000>;
+
+			trips {
+				poe_gpu_active: poe-active {
+					temperature = <60000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+			};
+
+			cooling-maps {
+				poe-fan-map {
+					trip = <&poe_gpu_active>;
+					cooling-device = <&poe_fan 0 3>;
+				};
+			};
+		};
+
 		msm-skin-thermal {
 			polling-delay-passive = <0>;
 			thermal-sensors = <&pmk8350_adc_tm 2>;
@@ -906,7 +962,8 @@
 /* Pin 22, 33, 36, 37 in GPIO header */
 &spi14 {
 	qcom,enable-gsi-dma;
-	status = "okay";
+	/* GPIO56 is used by the PoE HAT fan. */
+	status = "disabled";
 };
 
 &swr0 {
